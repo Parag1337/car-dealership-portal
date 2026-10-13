@@ -1,8 +1,10 @@
 from django.shortcuts import render
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
+from django.views.decorators.csrf import csrf_exempt
 from rest_framework import status, generics, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.authentication import SessionAuthentication
+from rest_framework.decorators import api_view, permission_classes, authentication_classes
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from .models import CarMake, CarModel, Dealer, Review
@@ -15,6 +17,12 @@ import json
 
 
 # Sentiment Analysis Helper
+class CsrfExemptSessionAuthentication(SessionAuthentication):
+    """Session auth without CSRF enforcement, for API/curl clients."""
+    def enforce_csrf(self, request):
+        return
+
+
 def analyze_sentiment(text):
     """
     Analyze sentiment of review text.
@@ -39,7 +47,9 @@ def analyze_sentiment(text):
 
 
 # Authentication Views
+@csrf_exempt
 @api_view(['POST'])
+@authentication_classes([CsrfExemptSessionAuthentication])
 @permission_classes([AllowAny])
 def login_user(request):
     """
@@ -71,7 +81,9 @@ def login_user(request):
         )
 
 
+@csrf_exempt
 @api_view(['POST'])
+@authentication_classes([CsrfExemptSessionAuthentication])
 @permission_classes([IsAuthenticated])
 def logout_user(request):
     """Logout user and clear session"""
@@ -81,7 +93,9 @@ def logout_user(request):
     }, status=status.HTTP_200_OK)
 
 
+@csrf_exempt
 @api_view(['POST'])
+@authentication_classes([CsrfExemptSessionAuthentication])
 @permission_classes([AllowAny])
 def register_user(request):
     """
@@ -103,6 +117,7 @@ def register_user(request):
 
 
 @api_view(['GET'])
+@permission_classes([AllowAny])
 def get_current_user(request):
     """Get current authenticated user info"""
     if request.user.is_authenticated:
@@ -167,7 +182,9 @@ def get_dealer_reviews(request, dealer_id):
         )
 
 
+@csrf_exempt
 @api_view(['POST'])
+@authentication_classes([CsrfExemptSessionAuthentication])
 @permission_classes([IsAuthenticated])
 def post_review(request):
     """
@@ -177,12 +194,20 @@ def post_review(request):
                    'car_year': int (optional), 'review_text': str}
     """
     data = request.data.copy()
-    data['customer'] = request.user.id
+    
+    # Normalize empty strings to None for optional fields so
+    # DateField/IntegerField validation doesn't fail on ''.
+    for field in ('purchase_date', 'car_year'):
+        if data.get(field) in ('',):
+            data[field] = None
+    # Normalize optional char fields: '' -> '' is fine, but keep as-is
+    for field in ('car_make', 'car_model'):
+        if data.get(field) is None:
+            data[field] = ''
     
     # Analyze sentiment
     review_text = data.get('review_text', '')
     sentiment = analyze_sentiment(review_text)
-    data['sentiment'] = sentiment
     
     serializer = ReviewSerializer(data=data)
     
@@ -222,7 +247,9 @@ def get_car_models(request):
 
 
 # Sentiment Analysis View
+@csrf_exempt
 @api_view(['POST'])
+@authentication_classes([CsrfExemptSessionAuthentication])
 @permission_classes([AllowAny])
 def analyze_review_sentiment(request):
     """

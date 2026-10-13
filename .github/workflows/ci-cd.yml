@@ -63,12 +63,15 @@ jobs:
     steps:
     - uses: actions/checkout@v3
     
-    - name: Deploy to production
+    - name: Validate deployment configuration
       run: |
-        echo "Deploying application..."
-        echo "This is where you would deploy to your cloud platform"
-        echo "Examples: Heroku, AWS, Azure, Google Cloud, etc."
+        pip install pyyaml
+        python -c "import yaml; yaml.safe_load(open('render.yaml')); print('render.yaml is valid')"
+        bash -n server/build.sh && echo "build.sh syntax OK"
+        cd server && python manage.py check
     
-    - name: Notify deployment
+    - name: Deployment requires manual dashboard setup
       run: |
-        echo "Deployment completed successfully!"
+        echo "Automated checks passed."
+        echo "Production deployment to Render requires connecting this repository in the Render dashboard (see DEPLOYMENT_INSTRUCTIONS.md)."
+        echo "No automatic remote deploy is performed by this workflow."

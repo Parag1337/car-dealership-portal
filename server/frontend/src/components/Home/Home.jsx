@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
-import './Dealers.css';
+import '../Dealers/Dealers.css';
 
 function Home() {
   const [dealers, setDealers] = useState([]);

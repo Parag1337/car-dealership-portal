@@ -1,6 +1,13 @@
 # Full Stack Capstone Project - Grading Checklist
 ## Enhanced Car Dealership Portal
 
+> **Verification audit 2026-10-13 (local verification):** Tasks 1–23 verified against
+> live code/tests/browser — see `reports/rubric-audit.md`, `reports/final-report.md`, and
+> `screenshots/` (11 genuine captures). `Contact.html` was rebuilt (was unstyled) and the
+> CI deploy placeholder + `build.sh` Render defects were fixed. **Tasks 24–28 remain
+> "Ready for Deployment", NOT verified: the URL on file returns HTTP 404 as of this date,
+> and no remote deploy was performed.**
+
 This document provides verification information for all 28 tasks in the capstone project.
 
 ---
