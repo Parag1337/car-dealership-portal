@@ -1,4 +1,4 @@
-name: CI/CD Pipeline
+name: CI Pipeline
 
 on:
   push:
@@ -9,67 +9,80 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    
+
     steps:
     - uses: actions/checkout@v3
-    
+
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
-        python-version: '3.10'
-    
+        python-version: '3.11'
+
     - name: Install Python dependencies
       run: |
         cd server
         pip install -r requirements.txt
-    
+
+    - name: Check for missing migrations
+      run: |
+        cd server
+        python manage.py makemigrations --check --dry-run
+
     - name: Run Django migrations
       run: |
         cd server
-        python manage.py makemigrations
         python manage.py migrate
-    
+
     - name: Run Django tests
       run: |
         cd server
         python manage.py test
-    
+
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
         node-version: '18'
-    
+
     - name: Install Node dependencies
       run: |
         cd server/frontend
         npm install
-    
+
     - name: Build React frontend
       run: |
         cd server/frontend
         npm run build
-    
+
     - name: Lint Python code
       run: |
         cd server
         pip install flake8
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics || true
-    
-  deploy:
+        flake8 djangoapp djangoproj --count --select=E9,F63,F7,F82 --show-source --statistics
+
+  validate-deployment:
     needs: test
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    
+
     steps:
     - uses: actions/checkout@v3
-    
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install Python dependencies
+      run: |
+        cd server
+        pip install -r requirements.txt
+
     - name: Validate deployment configuration
       run: |
         pip install pyyaml
         python -c "import yaml; yaml.safe_load(open('render.yaml')); print('render.yaml is valid')"
         bash -n server/build.sh && echo "build.sh syntax OK"
         cd server && python manage.py check
-    
+
     - name: Deployment requires manual dashboard setup
       run: |
         echo "Automated checks passed."

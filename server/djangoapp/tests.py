@@ -1,5 +1,6 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from rest_framework.test import APITestCase
 from rest_framework import status
 from .models import CarMake, CarModel, Dealer, Review
@@ -241,3 +242,124 @@ class CarAndSentimentAPITestCase(APITestCase):
     def test_sentiment_requires_text(self):
         resp = self.client.post('/api/analyze/', {}, format='json')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class CorsBehaviorTestCase(TestCase):
+    """Production must not allow all origins; explicit origins are honored."""
+
+    def test_origin_list_parser_rejects_wildcard_and_blanks(self):
+        from djangoproj.settings import _parse_origin_list
+        self.assertEqual(
+            _parse_origin_list(' https://a.example.com ,, *,https://b.example.com,https://a.example.com '),
+            ['https://a.example.com', 'https://b.example.com'],
+        )
+        self.assertEqual(_parse_origin_list(''), [])
+        self.assertEqual(_parse_origin_list(None), [])
+
+    def test_allow_all_origins_never_enabled(self):
+        from django.conf import settings
+        self.assertFalse(getattr(settings, 'CORS_ALLOW_ALL_ORIGINS', False))
+
+    @override_settings(
+        CORS_ALLOWED_ORIGINS=['https://car-dealership-portal.onrender.com'],
+        CORS_ALLOW_ALL_ORIGINS=False,
+    )
+    def test_allowed_origin_reflected_disallowed_not(self):
+        allowed = self.client.get(
+            '/api/dealers/',
+            HTTP_ORIGIN='https://car-dealership-portal.onrender.com',
+        )
+        self.assertEqual(
+            allowed.get('Access-Control-Allow-Origin'),
+            'https://car-dealership-portal.onrender.com',
+        )
+        denied = self.client.get(
+            '/api/dealers/', HTTP_ORIGIN='https://evil.example.com')
+        self.assertIsNone(denied.get('Access-Control-Allow-Origin'))
+
+
+class HomepageServingTestCase(TestCase):
+    """GET / must never 500: React build when present, JSON status otherwise.
+
+    The view is exercised without rendering the template: rendering through
+    the test client is broken by a Django 4.2/chained-Python incompatibility
+    (copy.copy of template Context in store_rendered_templates), while the
+    real server path is covered by live browser evidence (screenshots/).
+    """
+
+    def test_home_view_serves_react_build_or_status_fallback(self):
+        import os
+        from django.conf import settings
+        from django.http import JsonResponse
+        from django.template.response import TemplateResponse
+        from django.test import RequestFactory
+        from djangoproj.urls import _home_view
+
+        build_index = os.path.join(
+            settings.BASE_DIR, 'frontend', 'build', 'index.html')
+        resp = _home_view(RequestFactory().get('/'))
+        if os.path.exists(build_index):
+            # Production: the real React application entry point.
+            self.assertIsInstance(resp, TemplateResponse)
+            self.assertIn('index.html', resp.template_name)
+        else:
+            # Frontend not built yet: explicit status payload, never a 500.
+            self.assertIsInstance(resp, JsonResponse)
+            self.assertEqual(resp.status_code, 200)
+            import json
+            self.assertEqual(
+                json.loads(resp.content)['api_root'], '/api/')
+
+    def test_homepage_url_resolves_without_server_error(self):
+        # JsonResponse fallback path renders no template, so it is safe to
+        # exercise through the full test-client stack.
+        import os
+        from django.conf import settings
+        from unittest import mock
+        build_index = os.path.join(
+            settings.BASE_DIR, 'frontend', 'build', 'index.html')
+        with mock.patch('os.path.exists', return_value=False):
+            self.assertFalse(os.path.exists(build_index))
+            resp = self.client.get('/')
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.json()['api_root'], '/api/')
+
+
+class PopulateDataIdempotencyTestCase(TestCase):
+    """Repeated seeding must not duplicate rows or clobber user data."""
+
+    def _snapshot(self):
+        return {
+            'makes': CarMake.objects.count(),
+            'models': CarModel.objects.count(),
+            'dealers': Dealer.objects.count(),
+            'users': User.objects.count(),
+            'reviews': Review.objects.count(),
+        }
+
+    def test_repeated_runs_are_idempotent_and_preserve_users(self):
+        call_command('populate_data', verbosity=0)
+        before = self._snapshot()
+        self.assertGreater(before['dealers'], 0)
+        user = User.objects.get(username='testuser')
+        user.set_password('CustomPass123!')
+        user.save()
+        extra_review = Review.objects.create(
+            dealer=Dealer.objects.first(),
+            customer=user,
+            review_text='User-created review must survive reseeding.',
+            sentiment='neutral',
+        )
+        call_command('populate_data', verbosity=0)
+        call_command('populate_data', verbosity=0)
+        after = self._snapshot()
+        # Only the one deliberately added review may exist beyond the seed.
+        self.assertEqual(after['makes'], before['makes'])
+        self.assertEqual(after['models'], before['models'])
+        self.assertEqual(after['dealers'], before['dealers'])
+        self.assertEqual(after['users'], before['users'])
+        self.assertEqual(after['reviews'], before['reviews'] + 1)
+        user.refresh_from_db()
+        self.assertTrue(user.check_password('CustomPass123!'))
+        self.assertTrue(
+            Review.objects.filter(id=extra_review.id).exists())

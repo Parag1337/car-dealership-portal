@@ -165,11 +165,19 @@ class Command(BaseCommand):
         ]
 
         for review_data in reviews_data:
-            Review.objects.get_or_create(
-                dealer=review_data['dealer'],
-                customer=review_data['customer'],
-                defaults=review_data
-            )
+            # Look up on (dealer, customer, review_text): a (dealer, customer)
+            # pair alone is not unique — real users may post several reviews
+            # for one dealer, and reseeding must neither duplicate seed rows
+            # nor crash on user-created rows (MultipleObjectsReturned).
+            lookup = {
+                key: review_data[key]
+                for key in ('dealer', 'customer', 'review_text')
+            }
+            seed_defaults = {
+                key: value for key, value in review_data.items()
+                if key not in lookup
+            }
+            Review.objects.get_or_create(defaults=seed_defaults, **lookup)
         self.stdout.write(self.style.SUCCESS(f'Created sample reviews'))
 
         self.stdout.write(self.style.SUCCESS('Database populated successfully!'))

@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/4.2/ref/settings/
 from pathlib import Path
 import os
 import dj_database_url
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -21,16 +22,53 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
+def _parse_origin_list(raw_value):
+    """Parse a comma-separated env var into a list of origins.
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-@#$%^&*()_+1234567890abcdefghijklmnopqrstuvwxyz')
+    Empty entries are dropped and a bare '*' is never accepted as an
+    allowed origin (use an explicit origin instead).
+    """
+    origins = []
+    for item in (raw_value or '').split(','):
+        item = item.strip()
+        if not item or item == '*':
+            continue
+        if item not in origins:
+            origins.append(item)
+    return origins
+
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', '*').split(',')
+# SECURITY WARNING: keep the secret key used in production secret!
+# Development may use the insecure fallback below, but production
+# (DEBUG=False) refuses to start without an explicit SECRET_KEY so a
+# predictable default can never protect real user data.
+_INSECURE_DEV_SECRET_KEY = 'django-insecure-@#$%^&*()_+1234567890abcdefghijklmnopqrstuvwxyz'
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = _INSECURE_DEV_SECRET_KEY
+    else:
+        raise ImproperlyConfigured(
+            'SECRET_KEY environment variable is required when DEBUG=False.'
+        )
+
+# Allowed hosts: explicit in production, permissive only for local dev.
+_allowed_hosts_env = os.environ.get('ALLOWED_HOSTS')
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(',') if h.strip()]
+elif DEBUG:
+    ALLOWED_HOSTS = ['*']
+else:
+    raise ImproperlyConfigured(
+        'ALLOWED_HOSTS environment variable is required when DEBUG=False.'
+    )
+if not DEBUG and (not ALLOWED_HOSTS or '*' in ALLOWED_HOSTS):
+    raise ImproperlyConfigured(
+        'ALLOWED_HOSTS must list explicit hostnames when DEBUG=False (no "*").'
+    )
 
 
 # Application definition
@@ -158,14 +196,30 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+# The React app is served from the same origin in production (Django serves
+# frontend/build/index.html), so browsers make same-origin requests and need
+# no CORS headers there. Local development uses the React dev server on :3000
+# (a different origin), which is allowed below. An explicit allow-list for any
+# decoupled frontend can be provided via the CORS_ALLOWED_ORIGINS env var
+# (comma-separated, e.g. "https://app.example.com"). A bare '*' is rejected
+# by _parse_origin_list and CORS_ALLOW_ALL_ORIGINS is never enabled.
+if DEBUG:
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+else:
+    CORS_ALLOWED_ORIGINS = []
+CORS_ALLOWED_ORIGINS += [
+    origin for origin in _parse_origin_list(os.environ.get('CORS_ALLOWED_ORIGINS', ''))
+    if origin not in CORS_ALLOWED_ORIGINS
 ]
 
-# Add production domain when deployed
-if not DEBUG:
-    CORS_ALLOW_ALL_ORIGINS = True
+# Trust the same explicit https origins for CSRF so a decoupled frontend
+# deployed at an allowed origin can use session authentication.
+CSRF_TRUSTED_ORIGINS = [
+    origin for origin in CORS_ALLOWED_ORIGINS if origin.startswith('https://')
+]
 
 CORS_ALLOW_CREDENTIALS = True
 

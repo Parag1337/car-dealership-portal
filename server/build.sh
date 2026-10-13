@@ -22,7 +22,7 @@ python manage.py collectstatic --no-input
 echo "Running database migrations..."
 python manage.py migrate
 
-echo "Populating initial data..."
-python manage.py populate_data || echo "Warning: Could not populate data (may already exist)"
+echo "Populating initial data (idempotent; safe to re-run)..."
+python manage.py populate_data
 
 echo "Build completed successfully!"
