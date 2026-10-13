@@ -62,14 +62,17 @@ python manage.py runserver
 ## Task 5: Login cURL Command
 **Status:** ✓ Completed
 **File:** [loginuser](loginuser)
-**Command:**
+**Note:** state-changing API calls enforce CSRF. Browsers get the token automatically (see `frontend/src/index.js`); curl must bootstrap the cookie jar and send the token header:
 ```bash
+curl -c cookies.txt http://localhost:8000/api/user/
+TOKEN=$(awk '/csrftoken/{print $NF}' cookies.txt)
 curl -X POST http://localhost:8000/api/login/ \
   -H "Content-Type: application/json" \
-  -d '{"username": "testuser", "password": "testpass123"}' \
-  -c cookies.txt
+  -H "X-CSRFToken: $TOKEN" \
+  -b cookies.txt -c cookies.txt \
+  -d '{"username": "testuser", "password": "testpass123"}'
 ```
-**Expected Output:** JSON with success message and user details
+**Expected Output:** JSON with success message and user details (403 without the token header)
 
 ---
 
@@ -78,11 +81,13 @@ curl -X POST http://localhost:8000/api/login/ \
 **File:** [logoutuser](logoutuser)
 **Command:**
 ```bash
+TOKEN=$(awk '/csrftoken/{print $NF}' cookies.txt)
 curl -X POST http://localhost:8000/api/logout/ \
   -H "Content-Type: application/json" \
+  -H "X-CSRFToken: $TOKEN" \
   -b cookies.txt
 ```
-**Expected Output:** JSON with logout success message
+**Expected Output:** JSON with logout success message (403 without the token header)
 
 ---
 
@@ -186,11 +191,15 @@ curl -X GET http://localhost:8000/api/cars/models/
 **File:** [analyzereview](analyzereview)
 **Command:**
 ```bash
+curl -c cookies.txt http://localhost:8000/api/user/
+TOKEN=$(awk '/csrftoken/{print $NF}' cookies.txt)
 curl -X POST http://localhost:8000/api/analyze/ \
   -H "Content-Type: application/json" \
+  -H "X-CSRFToken: $TOKEN" \
+  -b cookies.txt \
   -d '{"text": "Fantastic services"}'
 ```
-**Expected Output:** `{"text": "Fantastic services", "sentiment": "positive"}`
+**Expected Output:** `{"text": "Fantastic services", "sentiment": "positive"}` (no login required; 403 without the token header)
 **Endpoint:** /api/analyze/
 
 ---

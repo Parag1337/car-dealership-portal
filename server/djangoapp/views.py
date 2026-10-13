@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from django.contrib.auth import login, logout, authenticate
 from django.contrib.auth.models import User
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status, generics, viewsets
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.decorators import api_view, permission_classes, authentication_classes
@@ -17,10 +17,21 @@ import json
 
 
 # Sentiment Analysis Helper
-class CsrfExemptSessionAuthentication(SessionAuthentication):
-    """Session auth without CSRF enforcement, for API/curl clients."""
-    def enforce_csrf(self, request):
-        return
+class CsrfEnforcingSessionAuthentication(SessionAuthentication):
+    """Session auth with CSRF enforced on every unsafe request.
+
+    Stock DRF only runs enforce_csrf() once a session user is already
+    authenticated, which leaves pre-login POSTs (login/register) without
+    login-CSRF protection. Validating against the csrftoken cookie needs no
+    session — just a cookie/header match — so browsers bootstrap it from
+    GET /api/user/ (ensure_csrf_cookie) and send it as X-CSRFToken.
+    Safe methods are untouched.
+    """
+
+    def authenticate(self, request):
+        if request.method not in ('GET', 'HEAD', 'OPTIONS', 'TRACE'):
+            self.enforce_csrf(request)
+        return super().authenticate(request)
 
 
 def analyze_sentiment(text):
@@ -47,9 +58,15 @@ def analyze_sentiment(text):
 
 
 # Authentication Views
-@csrf_exempt
+# NOTE: these views use CsrfEnforcingSessionAuthentication (standard session
+# auth plus CSRF on every unsafe request, including pre-login ones).
+# Browsers obtain the csrftoken cookie from GET /api/user/
+# (ensure_csrf_cookie below) and send it back as X-CSRFToken (see
+# frontend/src/index.js axios defaults). This includes the first
+# login/registration POST: Django validates the cookie/header pair for
+# anonymous users too, no authenticated session required.
 @api_view(['POST'])
-@authentication_classes([CsrfExemptSessionAuthentication])
+@authentication_classes([CsrfEnforcingSessionAuthentication])
 @permission_classes([AllowAny])
 def login_user(request):
     """
@@ -81,9 +98,8 @@ def login_user(request):
         )
 
 
-@csrf_exempt
 @api_view(['POST'])
-@authentication_classes([CsrfExemptSessionAuthentication])
+@authentication_classes([CsrfEnforcingSessionAuthentication])
 @permission_classes([IsAuthenticated])
 def logout_user(request):
     """Logout user and clear session"""
@@ -93,9 +109,8 @@ def logout_user(request):
     }, status=status.HTTP_200_OK)
 
 
-@csrf_exempt
 @api_view(['POST'])
-@authentication_classes([CsrfExemptSessionAuthentication])
+@authentication_classes([CsrfEnforcingSessionAuthentication])
 @permission_classes([AllowAny])
 def register_user(request):
     """
@@ -116,6 +131,7 @@ def register_user(request):
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
+@ensure_csrf_cookie
 @api_view(['GET'])
 @permission_classes([AllowAny])
 def get_current_user(request):
@@ -182,9 +198,8 @@ def get_dealer_reviews(request, dealer_id):
         )
 
 
-@csrf_exempt
 @api_view(['POST'])
-@authentication_classes([CsrfExemptSessionAuthentication])
+@authentication_classes([CsrfEnforcingSessionAuthentication])
 @permission_classes([IsAuthenticated])
 def post_review(request):
     """
@@ -247,9 +262,10 @@ def get_car_models(request):
 
 
 # Sentiment Analysis View
-@csrf_exempt
+# AllowAny (no login required); CSRF still enforced for browser POSTs via
+# the csrftoken cookie, same as login/registration.
 @api_view(['POST'])
-@authentication_classes([CsrfExemptSessionAuthentication])
+@authentication_classes([CsrfEnforcingSessionAuthentication])
 @permission_classes([AllowAny])
 def analyze_review_sentiment(request):
     """

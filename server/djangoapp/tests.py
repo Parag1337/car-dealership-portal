@@ -363,3 +363,116 @@ class PopulateDataIdempotencyTestCase(TestCase):
         self.assertTrue(user.check_password('CustomPass123!'))
         self.assertTrue(
             Review.objects.filter(id=extra_review.id).exists())
+
+
+class CsrfSessionFlowTestCase(TestCase):
+    """Real browser-session CSRF flow (enforce_csrf_checks=True).
+
+    Uses plain Django test clients with CSRF enforcement on — no
+    force_authenticate, no CSRF-disabled shortcuts — so these tests exercise
+    the same cookie/header flow the React app uses:
+    GET /api/user/ plants csrftoken -> POSTs send it back as X-CSRFToken.
+    """
+
+    def _client(self):
+        from django.test import Client
+        return Client(enforce_csrf_checks=True)
+
+    def _bootstrap(self, client):
+        """Mimic SPA load: fetch /api/user/ and return the csrftoken."""
+        resp = client.get('/api/user/')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        token = client.cookies.get('csrftoken')
+        self.assertIsNotNone(token, 'csrftoken cookie must be set by /api/user/')
+        return token.value
+
+    def _post(self, client, path, payload, token=None):
+        import json
+        extra = {}
+        if token:
+            extra['HTTP_X_CSRFTOKEN'] = token
+        return client.post(path, data=json.dumps(payload),
+                           content_type='application/json', **extra)
+
+    def _rotated_token(self, client, response):
+        """Django rotates the CSRF token on login; follow the fresh cookie."""
+        cookie = response.cookies.get('csrftoken')
+        if cookie:
+            return cookie.value
+        return client.cookies['csrftoken'].value
+
+    def test_register_login_review_logout_full_browser_flow(self):
+        client = self._client()
+        token = self._bootstrap(client)
+
+        # Registration (anonymous) succeeds with a valid token ...
+        reg = self._post(client, '/api/register/', {
+            'username': 'csrfuser', 'first_name': 'Csrf', 'last_name': 'User',
+            'email': 'csrf@example.com', 'password': 'StrongPass123!',
+        }, token=token)
+        self.assertEqual(reg.status_code, status.HTTP_201_CREATED)
+        token = self._rotated_token(client, reg)
+
+        dealer = Dealer.objects.create(
+            name="CSRF Motors", address="1 Main St", city="Wichita",
+            state="Kansas", zip_code="67202", phone="111", email="c@c.com")
+
+        # ... authenticated review submission works with the session+token ...
+        posted = self._post(client, '/api/reviews/', {
+            'dealer': dealer.id, 'purchase': False,
+            'review_text': 'Fantastic service, excellent and amazing!',
+        }, token=token)
+        self.assertEqual(posted.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(posted.json()['review']['sentiment'], 'positive')
+
+        # ... logout works with the session+token ...
+        out = self._post(client, '/api/logout/', {}, token=token)
+        self.assertEqual(out.status_code, status.HTTP_200_OK)
+        me = client.get('/api/user/')
+        self.assertFalse(me.json()['authenticated'])
+
+    def test_login_with_valid_token_then_state_changes_need_tokens(self):
+        User.objects.create_user(username='tokuser', password='TokPass123!')
+        client = self._client()
+        token = self._bootstrap(client)
+
+        logged = self._post(client, '/api/login/', {
+            'username': 'tokuser', 'password': 'TokPass123!'}, token=token)
+        self.assertEqual(logged.status_code, status.HTTP_200_OK)
+        token = self._rotated_token(client, logged)
+
+        dealer = Dealer.objects.create(
+            name="Token Motors", address="1 Main St", city="Boston",
+            state="Massachusetts", zip_code="02101", phone="222",
+            email="t@t.com")
+        denied = self._post(client, '/api/reviews/', {
+            'dealer': dealer.id, 'review_text': 'No token here.'})
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_anonymous_register_and_login_rejected_without_token(self):
+        client = self._client()
+        self._bootstrap(client)  # cookie exists, but header is not sent
+
+        reg = self._post(client, '/api/register/', {
+            'username': 'notoken', 'first_name': 'No', 'last_name': 'Token',
+            'email': 'n@t.com', 'password': 'StrongPass123!'})
+        self.assertEqual(reg.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertFalse(User.objects.filter(username='notoken').exists())
+
+        User.objects.create_user(username='plain', password='PlainPass123!')
+        logged = self._post(client, '/api/login/', {
+            'username': 'plain', 'password': 'PlainPass123!'})
+        self.assertEqual(logged.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_sentiment_usable_without_login_but_needs_csrf_token(self):
+        client = self._client()
+        token = self._bootstrap(client)
+
+        ok = self._post(client, '/api/analyze/',
+                        {'text': 'Fantastic services'}, token=token)
+        self.assertEqual(ok.status_code, status.HTTP_200_OK)
+        self.assertEqual(ok.json()['sentiment'], 'positive')
+
+        denied = self._post(client, '/api/analyze/',
+                            {'text': 'Fantastic services'})
+        self.assertEqual(denied.status_code, status.HTTP_403_FORBIDDEN)

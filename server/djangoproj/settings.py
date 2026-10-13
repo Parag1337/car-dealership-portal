@@ -249,6 +249,12 @@ SESSION_COOKIE_SECURE = not DEBUG  # HTTPS only in production
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'
 
+# CSRF settings for the same-origin SPA: the React app reads the csrftoken
+# cookie (set by GET /api/user/) and sends it back as X-CSRFToken, so the
+# cookie must remain readable by JavaScript. Do NOT set this to True.
+CSRF_COOKIE_HTTPONLY = False
+CSRF_COOKIE_SAMESITE = 'Lax'
+
 # Security settings for production
 if not DEBUG:
     SECURE_SSL_REDIRECT = True

@@ -1,6 +1,8 @@
 # Deployment Readiness — Render (local verification only)
 
 **Date (UTC):** 2026-10-13
+**Update (UTC 2026-10-13, CSRF hardening):** `CsrfExemptSessionAuthentication` and all
+`@csrf_exempt` decorators removed from `server/djangoapp/views.py`; see §8.
 **Scope:** make the project safe to deploy via root `render.yaml`. **No commit, push,
 deploy, production-data change, or secret exposure was performed.** Existing
 `screenshots/` and `reports/` evidence was preserved untouched (one temporary
@@ -23,11 +25,13 @@ with the screenshots).
 | 10 | `check --deploy` W004 (no HSTS) | Low/Advisory | **Accepted deliberately:** HSTS risks lockout if misconfigured; redirect + secure cookies are on |
 | 11 | gunicorn `--workers 4` on free-plan RAM; health-check vs `SECURE_SSL_REDIRECT`; free-DB retention | Unknown (runtime-only) | **Flagged, not changed:** cannot be resolved without a real deploy; listed below |
 | 12 | Homepage test-client rendering 500s from Django 4.2 + Python 3.14 `copy(Context)` incompatibility (test harness only; live serving proven by browser) | Low (env) | **Worked around:** view-level assertions without template render |
+| 13 | `CsrfExemptSessionAuthentication` + `@csrf_exempt` disabled CSRF on login/logout/register/review/analyze | High | **Fixed:** removed; `CsrfEnforcingSessionAuthentication` enforces CSRF on every unsafe request incl. pre-login (login-CSRF protection); `ensure_csrf_cookie` on `GET /api/user/`; axios `xsrfCookieName/xsrfHeaderName` in `frontend/src/index.js`; `CSRF_COOKIE_HTTPONLY=False` made explicit |
+| 14 | Stock DRF never CSRF-checks anonymous POSTs (`@api_view` is csrf_exempt; `enforce_csrf` runs only for authenticated sessions) — found because new token-less-register/login tests returned 201/200 instead of 403 | High | **Fixed** by #13 (enforcement moved into `authenticate()` before the session lookup) |
 
 ## 2. Files changed and reasons
 
 - `server/djangoproj/settings.py` — env-enforced `SECRET_KEY`/`ALLOWED_HOSTS` in prod; `_parse_origin_list`; dev-only local CORS; `CSRF_TRUSTED_ORIGINS` from explicit https origins. Same-origin production needs no CORS (Django serves the React build); no wildcards, no global CSRF weakening.
-- `server/djangoapp/tests.py` — +6 tests: CORS parser/reflection/`ALLOW_ALL`-absent; homepage React-vs-fallback routing; `populate_data` triple-run idempotency incl. custom-password + user-review preservation. Suite: **27/27**.
+- `server/djangoapp/tests.py` — +6 tests: CORS parser/reflection/`ALLOW_ALL`-absent; homepage React-vs-fallback routing; `populate_data` triple-run idempotency incl. custom-password + user-review preservation.
 - `server/djangoapp/management/commands/populate_data.py` — review `get_or_create` key fix (no other logic touched).
 - `server/build.sh` — seed errors are loud; migrate still precedes seeding.
 - `.github/workflows/ci-cd.yml` — renamed `CI Pipeline`; `validate-deployment` job is honest validation, no fake success.
@@ -75,3 +79,44 @@ cd frontend && npm run build
 ## 7. Production deployment verified?
 
 **No.** Configuration is locally verified; deployment needs the owner actions in §5.
+
+## 8. CSRF hardening pass (2026-10-13, uncommitted)
+
+**Changed files:**
+- `server/djangoapp/views.py` — deleted `CsrfExemptSessionAuthentication` and every
+  `@csrf_exempt`; added `CsrfEnforcingSessionAuthentication` (CSRF on all unsafe
+  requests incl. anonymous login/register/analyze) applied per-view to the five POST
+  endpoints; `@ensure_csrf_cookie` on `GET /api/user/`; permissions untouched
+  (`AllowAny` stays on login/register/analyze — no new auth requirements).
+- `server/frontend/src/index.js` — `axios.defaults.xsrfCookieName='csrftoken'`,
+  `xsrfHeaderName='X-CSRFToken'` (same-origin POSTs carry the token automatically).
+- `server/djangoproj/settings.py` — explicit `CSRF_COOKIE_HTTPONLY=False`
+  (JS must read the cookie) + `CSRF_COOKIE_SAMESITE='Lax'`.
+- `server/djangoapp/tests.py` — `CsrfSessionFlowTestCase` (4 tests) using
+  `Client(enforce_csrf_checks=True)`, real login POSTs, token-rotation handling;
+  no `force_authenticate`.
+- `render.yaml` — unchanged; verified compatible (same-origin needs no CORS/CSRF
+  vars; `CORS_ALLOWED_ORIGINS`/`CSRF_TRUSTED_ORIGINS` cover a decoupled frontend).
+
+**Actual results:**
+- `manage.py test` → **31/31 OK** (27 prior + 4 new). With-token flow: register 201 →
+  review 201 (sentiment positive) → logout 200. Without token: register/login/review/
+  analyze → 403. Analyze with token, no login → 200.
+- `manage.py check` clean; `makemigrations --check` clean; flake8 clean;
+  `npm run build` succeeds ("build folder ready", 1 pre-existing warning).
+- `check --deploy` (prod-like env) → only the accepted W004 HSTS advisory.
+- Live curl matrix (cookie jar + `X-CSRFToken`): no-token register/review → 403;
+  token register/login/review/logout → 201/200/201/200, session cycle confirmed.
+- Real browser (Playwright, dev servers): React login → "Login successful" →
+  Welcome/Logout; review POST from `/postreview/2` → redirect to `/dealer/2` with
+  the new review visible. Test review deleted afterwards; DB matches screenshots.
+- `git diff --check` clean. Screenshots and prior reports preserved.
+
+**Remaining limitations:**
+- Pre-login CSRF relies on the SPA hitting `GET /api/user/` on load (all current
+  components already do) — a client that POSTs login without first GETting any page
+  must fetch the cookie endpoint first (documented curl flow above).
+- Non-browser API clients (curl/scripts) must use the cookie-jar + header flow;
+  the old token-less curl commands in `GRADING_CHECKLIST.md` Tasks 5/6/16 will now
+  403 — update those snippets before relying on them.
+- Production deployment itself still unverified (owner dashboard actions pending).
